@@ -2,24 +2,21 @@
 // Программа должна завершаться по нажатию Ctrl+C. Выбрать и обосновать способ завершения работы всех воркеров.
 package main
 
-// Задачу можно было реализовать проще: через отмену записи в канал при Сtrl+C.
-// В данной реализации мы останавливаем именно воркеры, а можно было и продьюсер остановить.
-
 import (
-	"context"
 	"fmt"
+	"log"
 	"math/rand"
+	"os"
 	"os/signal"
-	"sync"
 	"syscall"
 	"time"
-
-	"log"
 )
+
+// В данной реализации мы останавливаем продьюсер, а не воркеры. Получилось компактнее.
 
 const (
 	countOfWorker = 5
-	countOfJobs   = 11
+	countOfJobs   = 21
 )
 
 func generateSlice() []int {
@@ -41,32 +38,15 @@ func payload(v int) {
 func main() {
 	defer timeout()()
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-
+	done := make(chan os.Signal, 1)
 	ch := make(chan int)
-	wg := &sync.WaitGroup{}
-	done := &sync.WaitGroup{}
 
-	done.Add(countOfWorker)
+	signal.Notify(done, syscall.SIGINT, syscall.SIGTERM)
 
 	for i := 0; i < countOfWorker; i++ {
 		go func() {
-			defer done.Done()
-
-			for {
-				select {
-				case <-ctx.Done():
-					log.Printf("worker %d: context was marked as done earlier, than user service has stopped\n", i)
-					return
-				case v, ok := <-ch:
-					if !ok {
-						log.Printf("worker %d: channel was closed, all work done\n", i)
-						return
-					}
-
-					payload(v)
-					wg.Done()
-				}
+			for v := range ch {
+				payload(v)
 			}
 		}()
 	}
@@ -74,22 +54,18 @@ func main() {
 	sliceWithNumbers := generateSlice()
 	fmt.Println("length of slice with numbers:", len(sliceWithNumbers))
 
-	go func() {
-		defer stop()
+	for _, v := range sliceWithNumbers {
+		select {
+		case <-done:
+			log.Println("service was stopped with Ctrl+C")
+			close(ch)
 
-		for _, randomNumber := range sliceWithNumbers {
-			wg.Add(1)
-			ch <- randomNumber
+			return
+
+		default:
+			ch <- v
 		}
-
-		wg.Wait() // ожидаем что все воркеры завершили работу
-
-		close(ch) // закрываем канал и сообщаем всем воркерам, что работа закончена
-	}()
-
-	<-ctx.Done() // ожидаем завершения работы программы
-
-	done.Wait() // все воркеры завершились
+	}
 }
 
 func timeout() func() {
